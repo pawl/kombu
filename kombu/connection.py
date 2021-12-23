@@ -147,15 +147,22 @@ class Connection:
 
     hostname = userid = password = ssl = login_method = None
 
+    def __del__(self):
+        logger.debug(f'Connection.__del__ self:{id(self)}')
+        self.collect()
+
     def __init__(self, hostname='localhost', userid=None,
                  password=None, virtual_host=None, port=None, insist=False,
                  ssl=False, transport=None, connect_timeout=5,
                  transport_options=None, login_method=None, uri_prefix=None,
                  heartbeat=0, failover_strategy='round-robin',
                  alternates=None, **kwargs):
+        logger.debug(f'Connection.__init__ self:{id(self)}')
+        #import traceback
+        #traceback.print_stack()
         alt = [] if alternates is None else alternates
         # have to spell the args out, just to get nice docstrings :(
-        params = self._initial_params = {
+        params = {
             'hostname': hostname, 'userid': userid,
             'password': password, 'virtual_host': virtual_host,
             'port': port, 'insist': insist, 'ssl': ssl,
@@ -272,6 +279,7 @@ class Connection:
 
     def connect(self):
         """Establish connection to server immediately."""
+        logger.debug('Connection.connect')
         return self._ensure_connection(
             max_retries=1, reraise_as_library_errors=False
         )
@@ -325,6 +333,8 @@ class Connection:
 
     def _do_close_self(self):
         # Close only connection and channel(s), but not transport.
+        logger.debug('Connection._do_close_self')
+        logger.debug('---')
         self.declared_entities.clear()
         if self._default_channel:
             self.maybe_close_channel(self._default_channel)
@@ -332,37 +342,53 @@ class Connection:
             try:
                 self.transport.close_connection(self._connection)
             except self.connection_errors + (AttributeError, socket.error):
+                logger.debug('Connection._do_close_self error')
                 pass
             self._connection = None
 
     def _close(self):
         """Really close connection, even if part of a connection pool."""
+        logger.debug('Connection._close')
         self._do_close_self()
         self._do_close_transport()
         self._debug('closed')
         self._closed = True
 
     def _do_close_transport(self):
+        logger.debug(f'Connection._do_close_transport self:{id(self)} _transport:{bool(self._transport)}')
+        #import traceback
+        #print('blah_print_stack')
+        #traceback.print_stack()
+        #import gc
+        #gc.collect()
+        #print('blah344', gc.get_referrers(self._transport))
+        #import sys
         if self._transport:
+            #print('blahrefcount', sys.getrefcount(self._transport))
             self._transport.client = None
             self._transport = None
 
     def collect(self, socket_timeout=None):
+        logger.debug('Connection.collect')
         # amqp requires communication to close, we don't need that just
         # to clear out references, Transport._collect can also be implemented
         # by other transports that want fast after fork
         try:
             gc_transport = self._transport._collect
         except AttributeError:
+            logger.debug('Connection.collect attributeerror')
             _timeo = socket.getdefaulttimeout()
             socket.setdefaulttimeout(socket_timeout)
             try:
+                # tried changing this to _close()... didn't work
                 self._do_close_self()
             except socket.timeout:
+                logger.debug('Connection.collect socket.timeout')
                 pass
             finally:
                 socket.setdefaulttimeout(_timeo)
         else:
+            logger.debug('Connection.collect gc_transport')
             gc_transport(self._connection)
 
         self._do_close_transport()
@@ -371,6 +397,7 @@ class Connection:
 
     def release(self):
         """Close the connection (if open)."""
+        logger.debug('Connection.release')
         self._close()
     close = release
 
@@ -414,6 +441,8 @@ class Connection:
             timeout (int): Maximum amount of time in seconds to spend
                 waiting for connection
         """
+        logger.debug('Connection._ensure_connection')
+
         if self.connected:
             return self._connection
 
@@ -614,6 +643,7 @@ class Connection:
 
     def clone(self, **kwargs):
         """Create a copy of the connection with same settings."""
+        # TODO: ensure_connected?
         return self.__class__(**dict(self._info(resolve=False), **kwargs))
 
     def get_heartbeat_interval(self):
@@ -891,7 +921,8 @@ class Connection:
             a connection is passed instead of a channel, to functions that
             require a channel.
         """
-        # make sure we're still connected, and if not refresh.
+        # make sure we're still connected, and if not refresh
+        logger.debug('Connection.default_channel')
         conn_opts = self._extract_failover_opts()
         self._ensure_connection(**conn_opts)
 
@@ -932,7 +963,7 @@ class Connection:
         but where the connection must be closed and re-established first.
         """
         try:
-            return self.transport.recoverable_connection_errors
+            return self.get_transport_cls().recoverable_connection_errors
         except AttributeError:
             # There were no such classification before,
             # and all errors were assumed to be recoverable,
@@ -948,19 +979,19 @@ class Connection:
         recovered from without re-establishing the connection.
         """
         try:
-            return self.transport.recoverable_channel_errors
+            return self.get_transport_cls().recoverable_channel_errors
         except AttributeError:
             return ()
 
     @cached_property
     def connection_errors(self):
         """List of exceptions that may be raised by the connection."""
-        return self.transport.connection_errors
+        return self.get_transport_cls().connection_errors
 
     @cached_property
     def channel_errors(self):
         """List of exceptions that may be raised by the channel."""
-        return self.transport.channel_errors
+        return self.get_transport_cls().channel_errors
 
     @property
     def supports_heartbeats(self):
@@ -985,7 +1016,9 @@ class ConnectionPool(Resource):
         super().__init__(limit=limit)
 
     def new(self):
-        return self.connection.clone()
+        cloned_connection = self.connection.clone()
+        logger.debug(f'ConnectionPool.new connection:{id(cloned_connection)}')
+        return cloned_connection
 
     def release_resource(self, resource):
         try:

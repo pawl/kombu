@@ -1,6 +1,7 @@
 """Generic resource pool implementation."""
 
 import os
+import logging
 from collections import deque
 from queue import Empty
 from queue import LifoQueue as _LifoQueue
@@ -11,6 +12,7 @@ from .utils.functional import lazy
 
 
 def _after_fork_cleanup_resource(resource):
+    logging.debug('_after_fork_cleanup_resource')
     try:
         resource.force_close_all()
     except Exception:

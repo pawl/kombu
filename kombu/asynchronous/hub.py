@@ -309,6 +309,7 @@ class Hub:
                     return
 
                 for fd, event in events or ():
+                    #logger.debug(f'Hub.create_loop fd:{fd} readers:{list(readers.keys())}({len(readers)}) writers:{list(writers.keys())}')
                     general_error = False
                     if fd in consolidate and \
                             writers.get(fd) is None:

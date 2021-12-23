@@ -4,6 +4,7 @@ Emulates the AMQ API for non-AMQ transports.
 """
 
 import base64
+import logging
 import socket
 import sys
 import warnings
@@ -448,6 +449,9 @@ class Channel(AbstractChannel, base.StdChannel):
     min_priority = 0
     max_priority = 9
 
+    def __del__(self):
+        logger.debug('Channel.__del__')
+
     def __init__(self, connection, **kwargs):
         self.connection = connection
         self._consumers = set()
@@ -529,6 +533,7 @@ class Channel(AbstractChannel, base.StdChannel):
 
     def queue_delete(self, queue, if_unused=False, if_empty=False, **kwargs):
         """Delete queue."""
+        logger.debug(f'Channel.queue_delete queue:{queue}')
         if if_empty and self._size(queue):
             return
         for exchange, routing_key, args in self.state.queue_bindings(queue):
@@ -774,6 +779,7 @@ class Channel(AbstractChannel, base.StdChannel):
 
         Cancel all consumers, and requeue unacked messages.
         """
+        logger.debug(f'Channel.close connection:{id(self.connection)}')
         if not self.closed:
             self.closed = True
             for consumer in list(self._consumers):
@@ -785,6 +791,7 @@ class Channel(AbstractChannel, base.StdChannel):
                 self._cycle = None
             if self.connection is not None:
                 self.connection.close_channel(self)
+        self.connection = None
         self.exchange_types = None
 
     def encode_body(self, body, encoding=None):
@@ -920,6 +927,7 @@ class Transport(base.Transport):
             return channel
 
     def close_channel(self, channel):
+        logging.debug(f'Transport.close_channel self:{id(self)}')
         try:
             self._avail_channel_ids.append(channel.channel_id)
             try:
@@ -934,15 +942,18 @@ class Transport(base.Transport):
         # this channel is then used as the next requested channel.
         # (returned by ``create_channel``).
         self._avail_channels.append(self.create_channel(self))
+        logging.debug(f'Transport.establish_connection self:{id(self)}')
         return self     # for drain events
 
     def close_connection(self, connection):
+        logging.debug(f'Transport.close_connection self:{id(self)}')
         self.cycle.close()
         for chan_list in self._avail_channels, self.channels:
             while chan_list:
                 try:
                     channel = chan_list.pop()
                 except LookupError:  # pragma: no cover
+                    logging.debug(f'Transport.close_connection LookupError')
                     pass
                 else:
                     channel.close()

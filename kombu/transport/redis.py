@@ -393,7 +393,11 @@ class MultiChannelPoller:
     #: Set of one-shot callbacks to call after reading from socket.
     after_read = None
 
+    def __del__(self):
+        logger.debug(f'MultiChannelPoller.__del__ self:{id(self)}')
+
     def __init__(self):
+        logger.debug(f'MultiChannelPoller.__init__ self:{id(self)}')
         # active channels
         self._channels = set()
         # file descriptor -> channel map.
@@ -406,10 +410,13 @@ class MultiChannelPoller:
         self.after_read = set()
 
     def close(self):
+        logger.debug(f'MultiChannelPoller.close self:{id(self)}')
+
         for fd in self._chan_to_sock.values():
             try:
                 self.poller.unregister(fd)
             except (KeyError, ValueError):
+                logger.debug('MultiChannelPoller.close KeyError, ValueError')
                 pass
         self._channels.clear()
         self._fd_to_chan.clear()
@@ -419,12 +426,15 @@ class MultiChannelPoller:
         self._channels.add(channel)
 
     def discard(self, channel):
+        logger.debug(f'MultiChannelPoller.discard channel_id:{channel.channel_id}')
         self._channels.discard(channel)
 
     def _on_connection_disconnect(self, connection):
+        logger.debug('MultiChannelPoller._on_connection_disconnect')
         try:
             self.poller.unregister(connection._sock)
         except (AttributeError, TypeError):
+            logger.debug('MultiChannelPoller._on_connection_disconnect AttributeError, TypeError')
             pass
 
     def _register(self, channel, client, type):
@@ -438,6 +448,7 @@ class MultiChannelPoller:
         self.poller.register(sock, self.eventflags)
 
     def _unregister(self, channel, client, type):
+        logger.debug(f'MultiChannelPoller._unregister channel_id:{channel.channel_id}')
         self.poller.unregister(self._chan_to_sock[(channel, client, type)])
 
     def _client_registered(self, channel, client, cmd):
@@ -495,6 +506,7 @@ class MultiChannelPoller:
                 client.check_health()
 
     def on_readable(self, fileno):
+        logger.debug(f'MultiChannelPoller.on_readable self:{id(self)}')
         chan, type = self._fd_to_chan[fileno]
         if chan.qos.can_consume():
             chan.handlers[type]()
@@ -548,6 +560,8 @@ class Channel(virtual.Channel):
 
     _client = None
     _subclient = None
+    _subclient_client = None
+
     _closing = False
     supports_fanout = True
     keyprefix_queue = '_kombu.binding.%s'
@@ -621,6 +635,9 @@ class Channel(virtual.Channel):
     _async_pool = None
     _pool = None
 
+    _client = None
+    _subclient = None
+
     from_transport_options = (
         virtual.Channel.from_transport_options +
         ('sep',
@@ -648,7 +665,12 @@ class Channel(virtual.Channel):
     connection_class = redis.Connection if redis else None
     connection_class_ssl = redis.SSLConnection if redis else None
 
+    def __del__(self):
+        logger.debug(f'Channel.__del__ self:{id(self)} closed:{self.closed}')
+
     def __init__(self, *args, **kwargs):
+        logger.debug(f'Channel.__init__ self:{id(self)}')
+
         super().__init__(*args, **kwargs)
 
         if not self.ack_emulation:  # disable visibility timeout
@@ -689,6 +711,7 @@ class Channel(virtual.Channel):
         self._disconnect_pools()
 
     def _disconnect_pools(self):
+        logger.debug('Channel._disconnect_pools')
         pool = self._pool
         async_pool = self._async_pool
 
@@ -701,10 +724,16 @@ class Channel(virtual.Channel):
             async_pool.disconnect()
 
     def _on_connection_disconnect(self, connection):
+        cycle = getattr(self.connection, 'cycle', None)
+        logger.debug(f'Channel._on_connection_disconnect connection:{id(connection)} cycle:{bool(cycle)}')
         if self._in_poll is connection:
             self._in_poll = None
         if self._in_listen is connection:
             self._in_listen = None
+        #import gc
+        #gc.collect()
+        #print('blah344'. gc.get_referrers(self.connection))
+        #print('blah34', self.connection, self.connection.cycle)
         if self.connection and self.connection.cycle:
             self.connection.cycle._on_connection_disconnect(connection)
 
@@ -971,6 +1000,8 @@ class Channel(virtual.Channel):
                                        queue or '']))
 
     def _delete(self, queue, exchange, routing_key, pattern, *args, **kwargs):
+        logger.debug(f'Channel._delete (overridden) kwargs:{kwargs}')
+
         self.auto_delete_queues.discard(queue)
         with self.conn_or_acquire(client=kwargs.get('client')) as client:
             client.srem(self.keyprefix_queue % (exchange,),
@@ -1009,30 +1040,55 @@ class Channel(virtual.Channel):
                 return sum(sizes[::2])
 
     def close(self):
+        logger.debug(f'--- start Channel.close (overridden)')
+        logger.debug(f'Channel.close (overridden) channel_id:{self.channel_id} closed:{self.closed}')
         self._closing = True
         if not self.closed:
             # remove from channel poller.
             self.connection.cycle.discard(self)
 
             # delete fanout bindings
-            client = self.__dict__.get('client')  # only if property cached
-            if client is not None:
-                for queue in self._fanout_queues:
-                    if queue in self.auto_delete_queues:
-                        self.queue_delete(queue, client=client)
+
+            # tried commenting out this block to stop the leak... didn't work
+            #if self._client is not None:
+            #    for queue in self._fanout_queues:
+            #        if queue in self.auto_delete_queues:
+            #            self.queue_delete(queue, client=self._client)
             self._disconnect_pools()
             self._close_clients()
+        #import gc
+        #gc.collect()
+        #print('blah344', gc.get_referrers(self.connection))
         super().close()
+        logger.debug(f'--- end Channel.close (overridden)')
+
 
     def _close_clients(self):
         # Close connections
-        for attr in 'client', 'subclient':
-            try:
-                client = self.__dict__[attr]
-                connection, client.connection = client.connection, None
-                connection.disconnect()
-            except (KeyError, AttributeError, self.ResponseError):
-                pass
+        logger.debug(f'Channel._close_clients channel_id:{self.channel_id} channels:{len(self.connection.channels)} _client:{bool(self._client)} _sub_client:{bool(self._subclient)}')
+        try:
+            if self._client:
+                self._client.close()
+                self._client = None
+        except self.ResponseError as ex:
+            logger.debug(f'Channel._close_clients _client {ex}')
+            pass
+
+        try:
+            if self._subclient:
+                self._subclient_client.close()
+                self._subclient.close()
+                self._subclient = None
+        except self.ResponseError as ex:
+            logger.debug(f'Channel._close_clients _subclient {ex}')
+            pass
+
+        # TODO: close more connections here?
+        import gc
+        gc.collect()
+        with open('blah.txt', 'w') as fp:
+            fp.write(str(gc.get_referrers(self.connection.cycle)))
+        #self.connection = None
 
     def _prepare_virtual_host(self, vhost):
         if not isinstance(vhost, numbers.Integral):
@@ -1114,13 +1170,21 @@ class Channel(virtual.Channel):
             self.connection_class
         )
 
-        if asynchronous:
-            class Connection(connection_cls):
-                def disconnect(self):
-                    super().disconnect()
-                    channel._on_connection_disconnect(self)
-            connection_cls = Connection
+        #import traceback
+        #print('blah_print_stack')
+        #traceback.print_stack()
 
+        #if asynchronous:
+        class Connection(connection_cls):
+            def disconnect(self):
+                logger.debug(f'Connection.disconnect (overridden) channel_id:{channel.channel_id} self:{id(self)}')
+                super().disconnect()
+                channel._on_connection_disconnect(self)
+        connection_cls = Connection
+        #else:
+        #    logger.debug('not async')
+        #    import traceback
+        #    traceback.print_stack()
         connparams['connection_class'] = connection_cls
 
         return connparams
@@ -1168,16 +1232,20 @@ class Channel(virtual.Channel):
             self._async_pool = self._get_pool(asynchronous=True)
         return self._async_pool
 
-    @cached_property
+    @property
     def client(self):
         """Client used to publish messages, BRPOP etc."""
-        return self._create_client(asynchronous=True)
+        if self._client is None:
+            self._client = self._create_client(asynchronous=True)
+        return self._client
 
-    @cached_property
+    @property
     def subclient(self):
         """Pub/Sub connection used to consume fanout queues."""
-        client = self._create_client(asynchronous=True)
-        return client.pubsub()
+        if self._subclient is None:
+            self._subclient_client = self._create_client(asynchronous=True)
+            self._subclient = self._subclient_client.pubsub()
+        return self._subclient
 
     def _update_queue_cycle(self):
         self._queue_cycle.update(self.active_queues)
@@ -1208,20 +1276,35 @@ class Transport(virtual.Transport):
         exchange_type=frozenset(['direct', 'topic', 'fanout'])
     )
 
+    if redis:
+        connection_errors, channel_errors = get_redis_error_classes()
+
+    def __del__(self):
+        logger.debug(f'Transport.__del__ self:{id(self)}')
+
     def __init__(self, *args, **kwargs):
+        logger.debug(f'Transport.__init__ self:{id(self)}')
+        #import traceback
+        #print('blah_print_stack')
+        #traceback.print_stack()
         if redis is None:
             raise ImportError('Missing redis library (pip install redis)')
         super().__init__(*args, **kwargs)
 
         # Get redis-py exceptions.
-        self.connection_errors, self.channel_errors = self._get_errors()
+        #self.connection_errors, self.channel_errors = self._get_errors()
         # All channels share the same poller.
         self.cycle = MultiChannelPoller()
 
     def driver_version(self):
         return redis.__version__
 
+    #def _collect(self, connection):
+    #    if connection is not None:
+    #        connection.collect()
+
     def register_with_event_loop(self, connection, loop):
+        logger.debug(f'Transport.register_with_event_loop connection:{id(connection)}')
         cycle = self.cycle
         cycle.on_poll_init(loop.poller)
         cycle_poll_start = cycle.on_poll_start
@@ -1229,11 +1312,25 @@ class Transport(virtual.Transport):
         on_readable = self.on_readable
 
         def _on_disconnect(connection):
+            # this never seems to do anything?
+            logger.debug(f'Transport.register_with_event_loop._on_disconnect connection._sock:{connection._sock} self:{id(self)} loop.on_tick:{len(loop.on_tick)}')
             if connection._sock:
                 loop.remove(connection._sock)
+            #cycle = None
+            #self.cycle = None
+
+            # THE FIX:
+            if on_poll_start in loop.on_tick:
+                logger.debug('on_tick on_poll_start removed')
+                loop.on_tick.remove(on_poll_start)
+            else:
+                logger.debug('on_tick on_poll_start removal failed')
+
         cycle._on_connection_disconnect = _on_disconnect
 
         def on_poll_start():
+            # THIS LOG MESSAGE FOUND THE ISSUE
+            logger.debug(f'Transport.register_with_event_loop.on_poll_start cycle.fds:{cycle.fds} self:{id(self)}')
             cycle_poll_start()
             [add_reader(fd, on_readable, fd) for fd in cycle.fds]
         loop.on_tick.add(on_poll_start)
@@ -1249,6 +1346,7 @@ class Transport(virtual.Transport):
 
     def on_readable(self, fileno):
         """Handle AIO event for one of our file descriptors."""
+        logger.debug(f'Transport.on_readable self:{id(self)}')
         self.cycle.on_readable(fileno)
 
     def _get_errors(self):

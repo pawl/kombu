@@ -3,6 +3,7 @@
 
 
 import errno
+import logging
 import socket
 
 from amqp.exceptions import RecoverableConnectionError
@@ -201,6 +202,7 @@ class Transport:
         pass
 
     def unregister_from_event_loop(self, connection, loop):
+        # TODO: add this to redis transport?
         pass
 
     def verify_connection(self, connection):
@@ -229,6 +231,7 @@ class Transport:
         return True
 
     def on_readable(self, connection, loop):
+        logging.debug('transport.base.Transport on_readable')
         reader = self.__reader
         if reader is None:
             reader = self.__reader = self._make_reader(connection)

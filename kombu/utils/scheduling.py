@@ -1,5 +1,6 @@
 """Scheduling Utilities."""
 
+import logging
 from itertools import count
 
 from .imports import symbol_by_name
@@ -57,6 +58,7 @@ class FairCycle:
 
     def close(self):
         """Close cycle."""
+        logging.debug('FairCycle.close')
 
     def __repr__(self):
         """``repr(cycle)``."""
